@@ -88,6 +88,23 @@ void setImageLayout(VkCommandBuffer cmdBuffer, VkImage image,
                     VkPipelineStageFlags srcStages,
                     VkPipelineStageFlags destStages);
 
+// Jaebaek: debugging setup
+static VkDebugReportCallbackEXT callback;
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugReportFlagsEXT flags,
+                                                    VkDebugReportObjectTypeEXT
+                                                    objType,
+                                                    uint64_t obj,
+                                                    size_t location,
+                                                    int32_t code,
+                                                    const char* layerPrefix,
+                                                    const char* msg,
+                                                    void* userData) {
+  LOGE("validation layer (%s): %s", layerPrefix, msg);
+
+  return VK_FALSE;
+}
+
 // Create vulkan device
 void CreateVulkanDevice(ANativeWindow* platformWindow,
                         VkApplicationInfo* appInfo) {
@@ -96,8 +113,23 @@ void CreateVulkanDevice(ANativeWindow* platformWindow,
 
   instance_extensions.push_back("VK_KHR_surface");
   instance_extensions.push_back("VK_KHR_android_surface");
+  instance_extensions.push_back("VK_EXT_debug_report");
 
   device_extensions.push_back("VK_KHR_swapchain");
+
+  std::vector<VkLayerProperties> layerProperties;
+  uint32_t count;
+
+  CALL_VK(vkEnumerateInstanceLayerProperties(&count, NULL));
+  layerProperties.resize(count);
+  LOGI("%u layers exists", count);
+  CALL_VK(vkEnumerateInstanceLayerProperties(&count, layerProperties.data()));
+
+  std::vector<const char *> requiredProperties;
+  for (int i = 0; i < layerProperties.size(); i++) {
+    LOGI("%s", layerProperties[i].layerName);
+    requiredProperties.push_back(layerProperties[i].layerName);
+  }
 
   // **********************************************************
   // Create the Vulkan instance
@@ -108,10 +140,20 @@ void CreateVulkanDevice(ANativeWindow* platformWindow,
       .enabledExtensionCount =
           static_cast<uint32_t>(instance_extensions.size()),
       .ppEnabledExtensionNames = instance_extensions.data(),
-      .enabledLayerCount = 0,
-      .ppEnabledLayerNames = nullptr,
+      .enabledLayerCount = (uint32_t) layerProperties.size(),
+      .ppEnabledLayerNames = requiredProperties.data(),
   };
   CALL_VK(vkCreateInstance(&instanceCreateInfo, nullptr, &device.instance_));
+
+  VkDebugReportCallbackCreateInfoEXT dbgCBInfo = {};
+  dbgCBInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
+  dbgCBInfo.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT;
+  dbgCBInfo.pfnCallback = debugCallback;
+  auto func = (PFN_vkCreateDebugReportCallbackEXT)
+      vkGetInstanceProcAddr(device.instance_,
+                            "vkCreateDebugReportCallbackEXT");
+  CALL_VK(func(device.instance_, &dbgCBInfo, nullptr, &callback));
+
   VkAndroidSurfaceCreateInfoKHR createInfo{
       .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
       .pNext = nullptr,
@@ -227,6 +269,8 @@ void CreateSwapChain(void) {
       .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
       .queueFamilyIndexCount = 1,
       .pQueueFamilyIndices = &device.queueFamilyIndex_,
+      .compositeAlpha = (VkCompositeAlphaFlagBitsKHR)
+          surfaceCapabilities.supportedCompositeAlpha,
       .presentMode = VK_PRESENT_MODE_FIFO_KHR,
       .oldSwapchain = VK_NULL_HANDLE,
       .clipped = VK_FALSE,
@@ -502,6 +546,10 @@ void DeleteVulkan(void) {
   DeleteSwapChain();
 
   vkDestroyDevice(device.device_, nullptr);
+  auto func = (PFN_vkDestroyDebugReportCallbackEXT)
+      vkGetInstanceProcAddr(device.instance_,
+                            "vkDestroyDebugReportCallbackEXT");
+  func(device.instance_, callback, NULL);
   vkDestroyInstance(device.instance_, nullptr);
 
   device.initialized_ = false;

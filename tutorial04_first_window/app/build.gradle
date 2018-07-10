@@ -1,5 +1,19 @@
 apply plugin: 'com.android.application'
 
+def ndkDir
+if (project.rootProject.file('local.properties').exists()) {
+    Properties properties = new Properties()
+        properties.load(project.rootProject.file('local.properties').newDataInputStream())
+        ndkDir = properties.getProperty('ndk.dir')
+}
+if (!ndkDir) {
+    ndkDir=System.getenv("ANDROID_NDK_HOME")
+}
+
+if(!ndkDir || ndkDir.empty) {
+    throw new GradleException('Environment Variable ANDROID_NDK_HOME for NDK path need to be setup')
+}
+
 android {
     compileSdkVersion 24
 
@@ -15,6 +29,11 @@ android {
                 abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
             }
         }
+
+        packagingOptions {
+            doNotStrip '*/mips/*.so'
+            doNotStrip '*/mips64/*.so'
+        }
     }
 
     externalNativeBuild {
@@ -22,6 +41,8 @@ android {
             path 'CMakeLists.txt'
         }
     }
+    sourceSets.main.jniLibs.srcDirs file(ndkDir).absolutePath +
+            '/sources/third_party/vulkan/src/build-android/jniLibs'
     buildTypes {
         release {
             minifyEnabled = false
