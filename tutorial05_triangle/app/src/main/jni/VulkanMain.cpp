@@ -101,6 +101,23 @@ void setImageLayout(VkCommandBuffer cmdBuffer, VkImage image,
                     VkPipelineStageFlags srcStages,
                     VkPipelineStageFlags destStages);
 
+// Jaebaek: debugging setup
+static VkDebugReportCallbackEXT callback;
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugReportFlagsEXT flags,
+                                                    VkDebugReportObjectTypeEXT
+                                                    objType,
+                                                    uint64_t obj,
+                                                    size_t location,
+                                                    int32_t code,
+                                                    const char* layerPrefix,
+                                                    const char* msg,
+                                                    void* userData) {
+  LOGE("validation layer (%s): %s", layerPrefix, msg);
+
+  return VK_FALSE;
+}
+
 // Create vulkan device
 void CreateVulkanDevice(ANativeWindow* platformWindow,
                         VkApplicationInfo* appInfo) {
@@ -109,8 +126,23 @@ void CreateVulkanDevice(ANativeWindow* platformWindow,
 
   instance_extensions.push_back("VK_KHR_surface");
   instance_extensions.push_back("VK_KHR_android_surface");
+  instance_extensions.push_back("VK_EXT_debug_report");
 
   device_extensions.push_back("VK_KHR_swapchain");
+
+  std::vector<VkLayerProperties> layerProperties;
+  uint32_t count;
+
+  CALL_VK(vkEnumerateInstanceLayerProperties(&count, NULL));
+  layerProperties.resize(count);
+  LOGI("%u layers exists", count);
+  CALL_VK(vkEnumerateInstanceLayerProperties(&count, layerProperties.data()));
+
+  std::vector<const char *> requiredProperties;
+  for (int i = 0; i < layerProperties.size(); i++) {
+    LOGI("%s", layerProperties[i].layerName);
+    requiredProperties.push_back(layerProperties[i].layerName);
+  }
 
   // **********************************************************
   // Create the Vulkan instance
@@ -121,10 +153,20 @@ void CreateVulkanDevice(ANativeWindow* platformWindow,
       .enabledExtensionCount =
           static_cast<uint32_t>(instance_extensions.size()),
       .ppEnabledExtensionNames = instance_extensions.data(),
-      .enabledLayerCount = 0,
-      .ppEnabledLayerNames = nullptr,
+      .enabledLayerCount = (uint32_t) layerProperties.size(),
+      .ppEnabledLayerNames = requiredProperties.data(),
   };
   CALL_VK(vkCreateInstance(&instanceCreateInfo, nullptr, &device.instance_));
+
+  VkDebugReportCallbackCreateInfoEXT dbgCBInfo = {};
+  dbgCBInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
+  dbgCBInfo.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT;
+  dbgCBInfo.pfnCallback = debugCallback;
+  auto func = (PFN_vkCreateDebugReportCallbackEXT)
+      vkGetInstanceProcAddr(device.instance_,
+                            "vkCreateDebugReportCallbackEXT");
+  CALL_VK(func(device.instance_, &dbgCBInfo, nullptr, &callback));
+
   VkAndroidSurfaceCreateInfoKHR createInfo{
       .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
       .pNext = nullptr,
@@ -240,6 +282,8 @@ void CreateSwapChain(void) {
       .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
       .queueFamilyIndexCount = 1,
       .pQueueFamilyIndices = &device.queueFamilyIndex_,
+      .compositeAlpha = (VkCompositeAlphaFlagBitsKHR)
+          surfaceCapabilities.supportedCompositeAlpha,
       .presentMode = VK_PRESENT_MODE_FIFO_KHR,
       .oldSwapchain = VK_NULL_HANDLE,
       .clipped = VK_FALSE,
@@ -406,32 +450,26 @@ void DeleteBuffers(void) {
   vkDestroyBuffer(device.device_, buffers.vertexBuf_, nullptr);
 }
 
+const uint32_t tri_vert[] = {
+#include "tri_vert.inc"
+};
+const uint32_t tri_frag[] = {
+#include "tri_frag.inc"
+};
+
 enum ShaderType { VERTEX_SHADER, FRAGMENT_SHADER };
-VkResult loadShaderFromFile(const char* filePath, VkShaderModule* shaderOut,
+VkResult loadShaderFromFile(VkShaderModule* shaderOut,
                             ShaderType type) {
-  // Read the file
-  assert(androidAppCtx);
-  AAsset* file = AAssetManager_open(androidAppCtx->activity->assetManager,
-                                    filePath, AASSET_MODE_BUFFER);
-  size_t fileLength = AAsset_getLength(file);
-
-  char* fileContent = new char[fileLength];
-
-  AAsset_read(file, fileContent, fileLength);
-  AAsset_close(file);
-
   VkShaderModuleCreateInfo shaderModuleCreateInfo{
       .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
       .pNext = nullptr,
-      .codeSize = fileLength,
-      .pCode = (const uint32_t*)fileContent,
+      .codeSize = type == VERTEX_SHADER ? sizeof(tri_vert) : sizeof(tri_frag),
+      .pCode = type == VERTEX_SHADER ? tri_vert : tri_frag,
       .flags = 0,
   };
   VkResult result = vkCreateShaderModule(
       device.device_, &shaderModuleCreateInfo, nullptr, shaderOut);
   assert(result == VK_SUCCESS);
-
-  delete[] fileContent;
 
   return result;
 }
@@ -459,8 +497,8 @@ VkResult CreateGraphicsPipeline(void) {
       .pDynamicStates = nullptr};
 
   VkShaderModule vertexShader, fragmentShader;
-  loadShaderFromFile("shaders/tri.vert.spv", &vertexShader, VERTEX_SHADER);
-  loadShaderFromFile("shaders/tri.frag.spv", &fragmentShader, FRAGMENT_SHADER);
+  loadShaderFromFile(&vertexShader, VERTEX_SHADER);
+  loadShaderFromFile(&fragmentShader, FRAGMENT_SHADER);
 
   // Specify vertex and fragment shader stages
   VkPipelineShaderStageCreateInfo shaderStages[2]{
@@ -833,6 +871,10 @@ void DeleteVulkan(void) {
   DeleteBuffers();
 
   vkDestroyDevice(device.device_, nullptr);
+  auto func = (PFN_vkDestroyDebugReportCallbackEXT)
+      vkGetInstanceProcAddr(device.instance_,
+                            "vkDestroyDebugReportCallbackEXT");
+  func(device.instance_, callback, NULL);
   vkDestroyInstance(device.instance_, nullptr);
 
   device.initialized_ = false;
