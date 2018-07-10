@@ -282,8 +282,6 @@ void CreateSwapChain(void) {
       .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
       .queueFamilyIndexCount = 1,
       .pQueueFamilyIndices = &device.queueFamilyIndex_,
-      .compositeAlpha = (VkCompositeAlphaFlagBitsKHR)
-          surfaceCapabilities.supportedCompositeAlpha,
       .presentMode = VK_PRESENT_MODE_FIFO_KHR,
       .oldSwapchain = VK_NULL_HANDLE,
       .clipped = VK_FALSE,
